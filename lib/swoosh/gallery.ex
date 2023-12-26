@@ -49,6 +49,25 @@ defmodule Swoosh.Gallery do
 
       mix swoosh.gallery.html --gallery MyApp.Mailer.Gallery --path "_build/emails"
 
+  By default, the previews will be sorted alphabetically. You can customize the sorting
+  by implementing the `sort/1` callback on your gallery module:
+
+      defmodule MyApp.Mailer.Gallery do
+        use Swoosh.Gallery,
+          sort: &MyApp.Mailer.Gallery.sort/1
+
+        preview("/welcome", MyApp.Mailer.WelcomeMailer)
+      end
+
+   Or disable sorting by passing `sort: false`, so the previews will be displayed in the
+   defined order in your Gallery.
+
+       defmodule MyApp.Mailer.Gallery do
+        use Swoosh.Gallery, sort: false
+        ...
+      end
+
+
   ### Generating preview data
 
   Previews should be built using in memory fixture data and we do **not recommend** that you
@@ -84,12 +103,23 @@ defmodule Swoosh.Gallery do
       end
   """
 
-  defmacro __using__(_options) do
+  @doc """
+  Sorts the previews. It receives a list of previews and should return a list of previews.
+  """
+  @callback sort(list(%{preview_details: map()})) :: list()
+  @optional_callbacks sort: 1
+
+  @spec __using__(any) ::
+          {:__block__, [], [{:@ | :def | :import | {any, any, any}, [...], [...]}, ...]}
+  defmacro __using__(options) do
     quote do
+      @behaviour Swoosh.Gallery
+
       import unquote(__MODULE__)
       Module.register_attribute(__MODULE__, :previews, accumulate: true)
       Module.register_attribute(__MODULE__, :groups, accumulate: true)
       @group_path nil
+      @sort Keyword.get(unquote(options), :sort, true)
 
       def init(opts) do
         Keyword.put(opts, :gallery, __MODULE__.get())
@@ -108,7 +138,7 @@ defmodule Swoosh.Gallery do
       @doc false
       def get do
         previews = eval_details(@previews)
-        %{previews: previews, groups: @groups}
+        %{previews: previews, groups: @groups, sort: @sort}
       end
     end
   end
@@ -188,13 +218,19 @@ defmodule Swoosh.Gallery do
     end
   end
 
+  @type preview() :: %{
+          :details_mfa => {module(), atom(), list()},
+          optional(:email) => Swoosh.Email.t(),
+          :email_mfa => {module(), atom(), list()},
+          :group => String.t() | nil,
+          :path => String.t(),
+          optional(:preview_details) => map()
+        }
+
   # Evaluates a preview. It loads the results of email_mfa and details_mfa into the email
   # and preview_details properties respectively.
   @doc false
-  @spec eval_preview(%{
-          :email_mfa => {module(), atom(), list()},
-          :details_mfa => {module(), atom(), list()}
-        }) :: map()
+  @spec eval_preview(preview()) :: map() | list()
   def eval_preview(%{email: _email} = preview), do: preview
 
   def eval_preview(preview) do
@@ -210,10 +246,7 @@ defmodule Swoosh.Gallery do
   # Evaluates preview details. It loads the results of details_mfa into the
   # preview_details property.
   @doc false
-  @spec eval_details(
-          %{:details_mfa => {module(), atom(), list()}}
-          | list(%{:details_mfa => {module(), atom(), list()}})
-        ) :: map()
+  @spec eval_details(preview() | list(preview())) :: map() | list()
   def eval_details(%{preview_details: _details} = preview), do: preview
 
   def eval_details(%{details_mfa: {module, fun, opts}} = preview) do
@@ -228,7 +261,7 @@ defmodule Swoosh.Gallery do
 
   # Evaluates a preview and reads the attachment at a given index position.
   @doc false
-  @spec read_email_attachment_at(%{email_mfa: {module, atom, list}}, integer()) ::
+  @spec read_email_attachment_at(preview(), integer()) ::
           {:error, :invalid_attachment | :not_found}
           | {:ok, %{content_type: String.t(), data: any}}
   def read_email_attachment_at(preview, index) do
